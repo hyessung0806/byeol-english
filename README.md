@@ -3,7 +3,7 @@
 초등 1학년 딸을 위한 **영어 학습 PWA** (별 시리즈). 알파벳·영어단어를 **그림·소리**와 함께
 즐겁게 익힌다. 그림은 OpenMoji, 발음은 기기 내장 음성(Web Speech API).
 
-- 배포(예정): https://hyessung0806.github.io/byeol-english/
+- 배포: **https://hyessung0806.github.io/byeol-english/** (라이브)
 - 단일 정적 사이트(빌드 없음). 외부 CDN 없음 — 그림(OpenMoji SVG)·아이콘만 번들.
 
 ## 기능
