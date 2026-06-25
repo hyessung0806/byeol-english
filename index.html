@@ -252,41 +252,53 @@ function persist(){ Store.set(KEY, JSON.stringify(save)); }
 const Speech = (() => {
   const synth = window.speechSynthesis;
   const supported = !!synth && "SpeechSynthesisUtterance" in window;
-  let voices=[], enVoice=null, unlocked=false;
+  let voices=[], enVoice=null, unlocked=false, warned=false, everSpoke=false;
   function pickEn(){
     const want = (window.save && save.settings && save.settings.voiceName) || "";
     if(want){ const m=voices.find(v=>v.name===want); if(m){ enVoice=m; return; } }
-    const en = voices.filter(v=>/^en[-_]?/i.test(v.lang));
-    enVoice = en.find(v=>/en[-_]US/i.test(v.lang)) || en.find(v=>/en[-_]GB/i.test(v.lang)) || en[0] || null;
+    const en = voices.filter(v=>/^en([-_]|$)/i.test(v.lang||"") || /english/i.test(v.name||""));
+    enVoice = en.find(v=>/en[-_]?US/i.test(v.lang)) || en.find(v=>/en[-_]?GB/i.test(v.lang)) || en[0] || null;
   }
-  function load(){ voices = synth ? synth.getVoices() : []; if(voices.length) pickEn(); }
+  function load(){ try{ voices = synth ? (synth.getVoices()||[]) : []; }catch(e){ voices=[]; } if(voices.length) pickEn(); return enVoice; }
   if(supported){
     load();
-    if(synth.addEventListener) synth.addEventListener("voiceschanged", load);
-    let n=0; const iv=setInterval(()=>{ if(enVoice || n++>20) clearInterval(iv); else load(); }, 250);
+    if(synth.addEventListener) synth.addEventListener("voiceschanged", load); else synth.onvoiceschanged = load;
+    // 안드로이드는 음성 목록이 늦게(때론 첫 발화 뒤에) 채워짐 → 길게 폴링
+    let n=0; const iv=setInterval(()=>{ load(); if(enVoice || n++>50) clearInterval(iv); }, 200);
   }
-  function unlock(){ if(unlocked||!supported) return; try{ const u=new SpeechSynthesisUtterance(" "); u.volume=0; synth.speak(u); unlocked=true; load(); }catch(e){} }
+  function unlock(){ if(unlocked||!supported) return; try{ const u=new SpeechSynthesisUtterance(" "); u.volume=0; synth.speak(u); unlocked=true; setTimeout(load,50); }catch(e){} }
   function speak(text, opt){
     opt = opt || {};
     if(window.save && save.settings && save.settings.voiceOn===false) return false;
-    if(!supported){ onNoVoice(text); return false; }
+    if(!supported){ noVoiceOnce(); return false; }
     unlock();
     try { synth.cancel(); } catch(e){}
+    load(); // 발화 직전 최신 음성 재조회 (안드 지연 대응)
     const u = new SpeechSynthesisUtterance(text);
     u.lang = opt.lang || "en-US";
     u.rate = (opt.rate!=null) ? opt.rate : ((window.save&&save.settings&&save.settings.rate)||0.75);
     u.pitch = (opt.pitch!=null) ? opt.pitch : 1.05;
-    if(enVoice) u.voice = enVoice; else onNoVoice(text);
+    if(enVoice) u.voice = enVoice; // 영어 음성 있으면 지정, 없으면 lang만으로 기본 엔진에 맡김
+    let started=false;
+    u.onstart = function(){ started=true; everSpoke=true; };
     if(opt.onend) u.onend = opt.onend;
-    setTimeout(()=>{ try{ synth.speak(u); }catch(e){} }, 60);
+    u.onerror = function(){ if(!started && !everSpoke) noVoiceOnce(); };
+    setTimeout(()=>{ try{ synth.speak(u); }catch(e){ noVoiceOnce(); } }, 60);
+    // 영어 음성이 아예 없고 1.5초 안에 발화도 시작 안 하면 → 안내(세션 1회)
+    if(!enVoice){ setTimeout(()=>{ if(!started && !everSpoke) noVoiceOnce(); }, 1500); }
     return true;
   }
   function speakSeq(items){ let i=0; const next=()=>{ if(i>=items.length) return; const it=items[i++]; speak(it.text, Object.assign({}, it.opt, {onend:next})); }; next(); }
-  function onNoVoice(t){ showToast('🔈 이 기기에 영어 목소리가 없어요. 화면 글자를 같이 읽어요: "'+t+'"'); }
+  function noVoiceOnce(){
+    if(warned) return; warned = true;
+    showToast('🔈 이 기기에 영어 음성이 없어요. 안드로이드는 [설정 → 일반 → 음성 합성(TTS) → "Google 음성" 선택 → 영어(미국) 내려받기] 하면 소리가 나와요.', 7000);
+  }
   return {
     supported, speak, speakSeq, unlock,
     refresh: load,
-    listEnVoices: () => voices.filter(v=>/^en/i.test(v.lang)),
+    hasVoice: () => !!enVoice,
+    test: () => { warned=false; speak("Hello! A, B, C.", {lang:"en-US"}); },
+    listEnVoices: () => voices.filter(v=>/^en/i.test(v.lang||"")),
   };
 })();
 
@@ -516,6 +528,7 @@ function mMenu(){
     ()=>{ s.rate=Math.min(1.0, Math.round((s.rate+0.05)*100)/100); persist(); mMenu(); });
   addMBtn(btns,`알파벳 자동소리: ${sayModeLabel(s.sayMode)}`,"ghost",()=>{ s.sayMode = s.sayMode==="both"?"name":s.sayMode==="name"?"phonics":"both"; persist(); mMenu(); });
   addVoicePicker(btns);
+  addMBtn(btns,"🔊 소리 테스트","ghost",()=>Speech.test());
   addMBtn(btns,"부모 모드 끄기","new",toggleMasterOff);
   addMBtn(btns,"비밀번호 변경","ghost",mChange);
   addMBtn(btns,"닫기","ghost",closeMaster);
@@ -568,7 +581,7 @@ function bindLongPress(el,fn,ms){
 
 /* ===== 10) 토스트 ===== */
 let _toastT=null;
-function showToast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove("show"),3200); }
+function showToast(msg, ms){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove("show"), ms||3200); }
 
 /* ===== 11) 시작 ===== */
 document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>navTo(b.dataset.go));
